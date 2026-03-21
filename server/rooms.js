@@ -9,6 +9,8 @@ export function createRoomState(roomId, hostSocketId) {
     roomId,
     hostSocketId,
     onlyHostControls: false,
+    /** @type {number | null} null = unlimited */
+    maxUsers: 10,
     videoProvider: null,
     videoSource: null,
     currentTime: 0,

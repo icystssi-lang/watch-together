@@ -1,9 +1,17 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { Link } from "react-router-dom";
 import { io, type Socket } from "socket.io-client";
+import { socketUrl } from "./apiBase";
 import { Chat } from "./Chat";
 import { resolveVideoUrl } from "./resolveVideoUrl";
 import { SyncedPlayer, type SyncedVideo } from "./SyncedPlayer";
 import "./index.css";
+
+export type Peer = {
+  socketId: string;
+  displayName: string;
+  sub: string | null;
+};
 
 type RoomPayload = {
   roomId: string;
@@ -14,16 +22,18 @@ type RoomPayload = {
   currentTime: number;
   isPlaying: boolean;
   username?: string;
+  maxUsers?: number | null;
+  peers?: Peer[];
 };
 
-function socketUrl() {
-  const env = import.meta.env.VITE_SOCKET_URL;
-  if (env) return env;
-  return "http://localhost:3001";
-}
+type Props = {
+  token: string;
+  onLogout: () => void;
+  isAdmin?: boolean;
+};
 
-export default function App() {
-  const [socket] = useState<Socket>(() => io(socketUrl(), { autoConnect: true }));
+export function WatchApp({ token, onLogout, isAdmin }: Props) {
+  const [socket, setSocket] = useState<Socket | null>(null);
   const [myId, setMyId] = useState<string | null>(null);
   const [phase, setPhase] = useState<"lobby" | "room">("lobby");
   const [roomId, setRoomId] = useState<string | null>(null);
@@ -35,12 +45,36 @@ export default function App() {
   const [urlInput, setUrlInput] = useState("");
   const [banner, setBanner] = useState<string | null>(null);
   const [username, setUsername] = useState<string | null>(null);
+  const [maxUsers, setMaxUsers] = useState<number | null>(10);
+  const [peers, setPeers] = useState<Peer[]>([]);
+  const [kickTarget, setKickTarget] = useState("");
+  const [maxInput, setMaxInput] = useState("10");
+  const [maxUnlimited, setMaxUnlimited] = useState(false);
 
   useEffect(() => {
+    const s = io(socketUrl(), { auth: { token } });
+    setSocket(s);
+    return () => {
+      s.disconnect();
+    };
+  }, [token]);
+
+  useEffect(() => {
+    if (!socket) return;
     const onConnect = () => setMyId(socket.id ?? null);
     const onDisconnect = () => setMyId(socket.id ?? null);
-    const onConnectError = () =>
+    const onConnectError = (err: Error) => {
+      const m = err?.message || "";
+      if (
+        m.includes("INVALID_TOKEN") ||
+        m.includes("UNAUTHORIZED") ||
+        m.includes("BANNED")
+      ) {
+        onLogout();
+        return;
+      }
       setBanner("Could not reach the server. Is it running?");
+    };
     socket.on("connect", onConnect);
     socket.on("disconnect", onDisconnect);
     socket.on("connect_error", onConnectError);
@@ -50,7 +84,7 @@ export default function App() {
       socket.off("disconnect", onDisconnect);
       socket.off("connect_error", onConnectError);
     };
-  }, [socket]);
+  }, [socket, onLogout]);
 
   const applyRoomPayload = useCallback((p: RoomPayload) => {
     setRoomId(p.roomId);
@@ -58,6 +92,12 @@ export default function App() {
     setOnlyHostControls(p.onlyHostControls);
     setPlayback({ time: p.currentTime, isPlaying: p.isPlaying });
     if (p.username) setUsername(p.username);
+    if (p.maxUsers !== undefined) {
+      setMaxUsers(p.maxUsers);
+      setMaxUnlimited(p.maxUsers == null);
+      setMaxInput(p.maxUsers == null ? "" : String(p.maxUsers));
+    }
+    if (p.peers) setPeers(p.peers);
     if (p.videoProvider && p.videoSource) {
       setVideo({
         provider: p.videoProvider as SyncedVideo["provider"],
@@ -69,6 +109,7 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    if (!socket) return;
     const onJoined = (p: RoomPayload) => {
       applyRoomPayload(p);
       setPhase("room");
@@ -92,7 +133,27 @@ export default function App() {
     const onHostChanged = ({ hostSocketId: id }: { hostSocketId: string }) =>
       setHostSocketId(id);
     const onDenied = () => setBanner("That action is not allowed (host only).");
-    const onJoinErr = () => setBanner("Room not found.");
+    const onJoinErr = (e: { error?: string }) => {
+      if (e?.error === "room_full") {
+        setBanner("This room is full. Ask the host to raise the limit.");
+      } else {
+        setBanner("Room not found.");
+      }
+    };
+    const onPeers = ({ peers: list }: { peers: Peer[] }) => setPeers(list);
+    const onSettings = ({ maxUsers: m }: { maxUsers: number | null }) => {
+      setMaxUsers(m);
+      setMaxUnlimited(m == null);
+      setMaxInput(m == null ? "" : String(m));
+    };
+    const onKicked = () => {
+      setPhase("lobby");
+      setRoomId(null);
+      setHostSocketId(null);
+      setVideo(null);
+      setPeers([]);
+      setBanner("You were removed from the room by the host.");
+    };
 
     socket.on("room_joined", onJoined);
     socket.on("load_video", onLoad);
@@ -103,6 +164,9 @@ export default function App() {
     socket.on("host_changed", onHostChanged);
     socket.on("control_denied", onDenied);
     socket.on("join_error", onJoinErr);
+    socket.on("room_peers", onPeers);
+    socket.on("room_settings_changed", onSettings);
+    socket.on("you_were_kicked", onKicked);
     return () => {
       socket.off("room_joined", onJoined);
       socket.off("load_video", onLoad);
@@ -113,6 +177,9 @@ export default function App() {
       socket.off("host_changed", onHostChanged);
       socket.off("control_denied", onDenied);
       socket.off("join_error", onJoinErr);
+      socket.off("room_peers", onPeers);
+      socket.off("room_settings_changed", onSettings);
+      socket.off("you_were_kicked", onKicked);
     };
   }, [socket, applyRoomPayload]);
 
@@ -135,11 +202,13 @@ export default function App() {
   }, [roomId]);
 
   function createRoom() {
+    if (!socket) return;
     setBanner(null);
     socket.emit("create_room");
   }
 
   function joinRoom() {
+    if (!socket) return;
     const id = joinInput.trim().toUpperCase();
     if (!id) return;
     setBanner(null);
@@ -147,16 +216,18 @@ export default function App() {
   }
 
   function leaveRoom() {
+    if (!socket) return;
     socket.emit("leave_room");
     setPhase("lobby");
     setRoomId(null);
     setHostSocketId(null);
     setVideo(null);
     setPlayback({ time: 0, isPlaying: false });
+    setPeers([]);
   }
 
   function loadVideo() {
-    if (!canControl) return;
+    if (!socket || !canControl) return;
     const r = resolveVideoUrl(urlInput);
     if (!r.ok) {
       setBanner(r.reason);
@@ -167,6 +238,27 @@ export default function App() {
     setUrlInput("");
   }
 
+  function applyMaxUsers() {
+    if (!socket || !isHost) return;
+    if (maxUnlimited) {
+      socket.emit("set_room_max_users", { maxUsers: null });
+    } else {
+      const n = Number(maxInput);
+      if (!Number.isFinite(n) || n < 1) {
+        setBanner("Enter a valid max (1–100) or enable Unlimited.");
+        return;
+      }
+      socket.emit("set_room_max_users", { maxUsers: n });
+    }
+    setBanner(null);
+  }
+
+  function kickSelected() {
+    if (!socket || !isHost || !kickTarget) return;
+    socket.emit("kick_participant", { targetSocketId: kickTarget });
+    setKickTarget("");
+  }
+
   const hostToggle = useMemo(
     () => (
       <label className="host-toggle">
@@ -175,7 +267,9 @@ export default function App() {
           checked={onlyHostControls}
           disabled={!isHost}
           onChange={(e) =>
-            socket.emit("set_host_only_controls", { enabled: e.target.checked })
+            socket?.emit("set_host_only_controls", {
+              enabled: e.target.checked,
+            })
           }
         />
         Only host can control playback
@@ -184,11 +278,40 @@ export default function App() {
     [isHost, onlyHostControls, socket]
   );
 
-  if (phase === "lobby") {
+  if (!socket || !socket.connected) {
     return (
       <div className="app lobby">
         <h1>Watch Together</h1>
-        <p className="muted">YouTube, Vimeo, direct video files, or generic embed URLs.</p>
+        <p className="muted">
+          {socket ? "Connecting…" : "Initializing…"}
+        </p>
+      </div>
+    );
+  }
+
+  const peerCount = peers.length;
+  const capLabel =
+    maxUsers == null ? `${peerCount} / ∞` : `${peerCount} / ${maxUsers}`;
+
+  if (phase === "lobby") {
+    return (
+      <div className="app lobby">
+        <header className="lobby-top">
+          <div className="lobby-nav">
+            {isAdmin && (
+              <Link to="/admin" className="nav-link">
+                Admin
+              </Link>
+            )}
+            <button type="button" className="linkish" onClick={onLogout}>
+              Sign out
+            </button>
+          </div>
+        </header>
+        <h1>Watch Together</h1>
+        <p className="muted">
+          YouTube, Vimeo, direct video files, or generic embed URLs.
+        </p>
         {banner && <p className="banner">{banner}</p>}
         <div className="lobby-actions">
           <button type="button" onClick={createRoom}>
@@ -217,6 +340,8 @@ export default function App() {
           <h1>Watch Together</h1>
           <p className="muted">
             Room <strong>{roomId}</strong>
+            {" · "}
+            <span title="Members / max">{capLabel}</span>
             {username && (
               <>
                 {" "}
@@ -227,11 +352,19 @@ export default function App() {
           </p>
         </div>
         <div className="header-actions">
+          {isAdmin && (
+            <Link to="/admin" className="nav-link">
+              Admin
+            </Link>
+          )}
           <button type="button" onClick={copyLink}>
             Copy room link
           </button>
           <button type="button" onClick={leaveRoom}>
             Leave
+          </button>
+          <button type="button" onClick={onLogout}>
+            Sign out
           </button>
         </div>
       </header>
@@ -247,8 +380,8 @@ export default function App() {
 
       {video?.provider === "iframe" && (
         <p className="hint">
-          Generic embed: playback may not stay in sync across everyone — use YouTube,
-          Vimeo, or a direct file when possible.
+          Generic embed: playback may not stay in sync across everyone — use
+          YouTube, Vimeo, or a direct file when possible.
         </p>
       )}
 
@@ -266,8 +399,62 @@ export default function App() {
           </button>
         </div>
         {hostToggle}
+        {isHost && (
+          <div className="host-tools">
+            <p className="muted small" style={{ margin: "0.25rem 0" }}>
+              Room capacity (host)
+            </p>
+            <div className="load-row">
+              <label className="host-toggle">
+                <input
+                  type="checkbox"
+                  checked={maxUnlimited}
+                  onChange={(e) => setMaxUnlimited(e.target.checked)}
+                />
+                Unlimited
+              </label>
+              <input
+                type="number"
+                min={1}
+                max={100}
+                disabled={maxUnlimited}
+                value={maxInput}
+                onChange={(e) => setMaxInput(e.target.value)}
+                style={{ width: 80 }}
+              />
+              <button type="button" onClick={applyMaxUsers}>
+                Apply limit
+              </button>
+            </div>
+            <div className="load-row">
+              <select
+                value={kickTarget}
+                onChange={(e) => setKickTarget(e.target.value)}
+                className="kick-select"
+              >
+                <option value="">Kick participant…</option>
+                {peers
+                  .filter((p) => p.socketId !== myId)
+                  .map((p) => (
+                    <option key={p.socketId} value={p.socketId}>
+                      {p.displayName} ({p.socketId.slice(0, 6)}…)
+                    </option>
+                  ))}
+              </select>
+              <button
+                type="button"
+                onClick={kickSelected}
+                disabled={!kickTarget}
+              >
+                Kick
+              </button>
+            </div>
+          </div>
+        )}
         {!canControl && (
-          <p className="muted small">Only the host can control playback right now.</p>
+          <p className="muted small">
+            Only the host can control playback right now.
+          </p>
         )}
       </section>
 
