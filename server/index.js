@@ -489,6 +489,8 @@ io.on("connection", (socket) => {
 });
 
 const PORT = Number(process.env.PORT) || 3001;
-httpServer.listen(PORT, () => {
-  logger.info({ port: PORT }, "server_listening");
+// Bind all interfaces so platform proxies (e.g. Railway) can reach the process; localhost-only breaks edge routing.
+const HOST = process.env.LISTEN_HOST || "0.0.0.0";
+httpServer.listen(PORT, HOST, () => {
+  logger.info({ port: PORT, host: HOST }, "server_listening");
 });
