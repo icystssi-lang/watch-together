@@ -801,7 +801,12 @@ export function WatchApp({ token, onLogout, isAdmin }: Props) {
         <aside className="room-sidebar">
           <ActivityFeed lines={activityLines} />
           <div className="chat-card">
-            <Chat key={roomId ?? ""} socket={socket} disabled={false} />
+            <Chat
+              key={roomId ?? ""}
+              socket={socket}
+              disabled={false}
+              myUsername={username ?? undefined}
+            />
           </div>
         </aside>
       </div>

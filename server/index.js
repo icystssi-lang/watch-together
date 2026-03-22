@@ -2,7 +2,7 @@ import express from "express";
 import { createServer } from "http";
 import { Server } from "socket.io";
 import cors from "cors";
-import { customAlphabet } from "nanoid";
+import { customAlphabet, nanoid } from "nanoid";
 import { createRoomState, isValidProvider } from "./rooms.js";
 import { initDb, bootstrapAdmin, isBannedSubject } from "./db.js";
 import { verifyToken } from "./jwtUtil.js";
@@ -170,6 +170,34 @@ function socketsInSameRoom(roomId, a, b) {
   const set = io.sockets.adapter.rooms.get(roomId);
   if (!set) return false;
   return set.has(a) && set.has(b);
+}
+
+function normalizeChatEmoji(raw) {
+  if (typeof raw !== "string") return "";
+  return raw.normalize("NFC").replace(/\uFE0F/g, "").trim();
+}
+
+/** Canonical keys (U+1F622 = crying face — explicit escape avoids wrong lookalike chars in source) */
+const CHAT_REACTION_EMOJI = new Set(
+  ["👍", "❤️", "😂", "😮", "\u{1F622}", "🔥"].map(normalizeChatEmoji),
+);
+const MAX_CHAT_MESSAGES_TRACKED = 500;
+
+function pruneOldChatMessages(room) {
+  if (!room.recentChatMessageIds || !room.messageReactions) return;
+  while (room.recentChatMessageIds.length > MAX_CHAT_MESSAGES_TRACKED) {
+    const oldId = room.recentChatMessageIds.shift();
+    if (oldId) room.messageReactions.delete(oldId);
+  }
+}
+
+/** @param {Map<string, Set<string>>} inner */
+function serializeReactions(inner) {
+  const out = {};
+  for (const [emoji, users] of inner) {
+    if (users.size > 0) out[emoji] = [...users].sort();
+  }
+  return out;
 }
 
 io.on("connection", (socket) => {
@@ -470,17 +498,60 @@ io.on("connection", (socket) => {
 
   socket.on("send_message", (data) => {
     const roomId = socketRoom.get(socket.id);
-    if (!roomId) return;
+    const room = roomId ? rooms.get(roomId) : null;
+    if (!room) return;
 
     const text = typeof data?.text === "string" ? data.text.trim() : "";
     if (!text) return;
 
+    if (!room.recentChatMessageIds) room.recentChatMessageIds = [];
+    if (!room.messageReactions) room.messageReactions = new Map();
+
+    const id = nanoid(12);
+    room.recentChatMessageIds.push(id);
+    room.messageReactions.set(id, new Map());
+    pruneOldChatMessages(room);
+
     const msg = {
+      id,
       username: socket.data.displayName || "User",
       text,
       ts: Date.now(),
+      reactions: {},
     };
     io.to(roomId).emit("receive_message", msg);
+  });
+
+  socket.on("react_message", (data) => {
+    const roomId = socketRoom.get(socket.id);
+    const room = roomId ? rooms.get(roomId) : null;
+    if (!room) return;
+
+    const messageId = typeof data?.messageId === "string" ? data.messageId : "";
+    const emoji = normalizeChatEmoji(typeof data?.emoji === "string" ? data.emoji : "");
+    if (!messageId || !CHAT_REACTION_EMOJI.has(emoji)) return;
+
+    if (!room.messageReactions) return;
+    const inner = room.messageReactions.get(messageId);
+    if (!inner) return;
+
+    const username = socket.data.displayName || "User";
+    let set = inner.get(emoji);
+    if (!set) {
+      set = new Set();
+      inner.set(emoji, set);
+    }
+    if (set.has(username)) {
+      set.delete(username);
+      if (set.size === 0) inner.delete(emoji);
+    } else {
+      set.add(username);
+    }
+
+    io.to(roomId).emit("message_reactions", {
+      messageId,
+      reactions: serializeReactions(inner),
+    });
   });
 
   socket.on("disconnect", () => {

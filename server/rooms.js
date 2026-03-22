@@ -21,5 +21,9 @@ export function createRoomState(roomId, hostSocketId) {
     videoSource: null,
     currentTime: 0,
     isPlaying: false,
+    /** @type {string[]} */
+    recentChatMessageIds: [],
+    /** @type {Map<string, Map<string, Set<string>>>} messageId -> emoji -> usernames */
+    messageReactions: new Map(),
   };
 }
