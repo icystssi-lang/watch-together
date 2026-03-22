@@ -6,7 +6,7 @@ import { AuthScreen } from "./AuthScreen";
 import { WatchApp } from "./WatchApp";
 import "./index.css";
 
-const STORAGE_KEY = "watch-together-token";
+const STORAGE_KEY = "veluma-auth-token";
 
 type Me = { sub: string; role: string; displayName: string };
 

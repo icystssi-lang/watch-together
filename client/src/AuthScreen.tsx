@@ -1,5 +1,7 @@
 import { useState } from "react";
 import { apiBase } from "./apiBase";
+import { APP_DISPLAY_NAME } from "./appName";
+import { SiteFooter } from "./SiteFooter";
 
 type Mode = "login" | "register" | "guest";
 
@@ -57,7 +59,7 @@ export function AuthScreen({ onAuthed }: Props) {
 
   return (
     <div className="app lobby auth-screen">
-      <h1>Watch Together</h1>
+      <h1>{APP_DISPLAY_NAME}</h1>
       <p className="muted">Sign in, create an account, or continue as a guest.</p>
 
       <div className="auth-tabs">
@@ -126,6 +128,7 @@ export function AuthScreen({ onAuthed }: Props) {
       <button type="button" disabled={busy} onClick={() => void submit()}>
         {busy ? "Please wait…" : mode === "guest" ? "Continue as guest" : mode === "register" ? "Create account" : "Login"}
       </button>
+      <SiteFooter />
     </div>
   );
 }

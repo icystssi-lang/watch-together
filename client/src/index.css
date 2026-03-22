@@ -291,3 +291,76 @@ button.linkish {
   width: 100%;
   height: 100%;
 }
+
+.site-footer {
+  margin-top: 2.5rem;
+  padding-top: 1.25rem;
+  border-top: 1px solid #2a2a32;
+  text-align: center;
+}
+
+.site-footer__line {
+  margin: 0;
+  font-size: 0.8125rem;
+  color: #9898a8;
+}
+
+.site-footer__credit {
+  margin-top: 0.35rem;
+}
+
+.player-shell {
+  margin-bottom: 0.5rem;
+}
+
+.player-shell__toolbar {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 0.35rem;
+}
+
+.player-fullscreen-btn {
+  font-size: 0.875rem;
+}
+
+.player-shell:fullscreen {
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+  width: 100%;
+  height: 100%;
+  padding: 0.5rem;
+  background: #0a0a0c;
+}
+
+.player-shell:fullscreen .player-shell__toolbar {
+  flex-shrink: 0;
+}
+
+.player-shell:fullscreen .synced-player-wrap {
+  flex: 1;
+  min-height: 0;
+  aspect-ratio: unset;
+  max-height: none;
+}
+
+.player-shell:-webkit-full-screen {
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+  width: 100%;
+  height: 100%;
+  padding: 0.5rem;
+  background: #0a0a0c;
+}
+
+.player-shell:-webkit-full-screen .player-shell__toolbar {
+  flex-shrink: 0;
+}
+
+.player-shell:-webkit-full-screen .synced-player-wrap {
+  flex: 1;
+  min-height: 0;
+  aspect-ratio: unset;
+  max-height: none;
+}

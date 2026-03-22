@@ -1,6 +1,6 @@
-# Watch Together
+# Veluma
 
-Watch YouTube, Vimeo, direct video files (e.g. `.mp4`), or generic embed URLs together in a room, with synced play/pause/seek (best effort for generic iframes) and chat. The **host** can also **share a screen or browser tab** to the room via WebRTC (mesh). **No video is hosted** on the server for URL-based playback—each person loads embeds or files in their own browser; screen share is peer‑to‑peer from the host.
+**Veluma** is a watch-together app: YouTube, Vimeo, direct video files (e.g. `.mp4`), or generic embed URLs in a room, with synced play/pause/seek (best effort for generic iframes) and chat. The **host** can also **share a screen or browser tab** to the room via WebRTC (mesh). **No video is hosted** on the server for URL-based playback—each person loads embeds or files in their own browser; screen share is peer‑to‑peer from the host.
 
 ## Requirements
 
@@ -22,8 +22,12 @@ Client (`client/.env.development`):
 |----------|---------|
 | `VITE_SOCKET_URL` | Socket.IO server (default `http://localhost:3001`) |
 | `VITE_WEBRTC_ICE_SERVERS` | Optional JSON array of `RTCIceServer` objects for screen share (add **TURN** when P2P fails behind strict NAT). Example: `[{"urls":"stun:stun.l.google.com:19302"},{"urls":"turn:turn.example.com:3478","username":"u","credential":"p"}]` |
+| `VITE_APP_COPYRIGHT_HOLDER` | Optional — copyright name in the footer (defaults are in [`client/src/siteMeta.ts`](client/src/siteMeta.ts)) |
+| `VITE_APP_BUILT_BY` | Optional — “Built by …” line in the footer |
 
 If `VITE_WEBRTC_ICE_SERVERS` is unset, the client uses public **STUN** only (`stun:stun.l.google.com:19302`).
+
+Footer text can also be customized by editing **`DEFAULT_COPYRIGHT_HOLDER`** and **`DEFAULT_BUILT_BY`** in [`client/src/siteMeta.ts`](client/src/siteMeta.ts).
 
 ## Run locally
 

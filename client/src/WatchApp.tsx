@@ -1,10 +1,17 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { io, type Socket } from "socket.io-client";
 import { socketUrl } from "./apiBase";
+import { APP_DISPLAY_NAME } from "./appName";
 import { Chat } from "./Chat";
+import {
+  enterFullscreen,
+  exitFullscreen,
+  getFullscreenElement,
+} from "./fullscreenDom";
 import { resolveVideoUrl } from "./resolveVideoUrl";
 import { ScreenShareStage } from "./ScreenShareStage";
+import { SiteFooter } from "./SiteFooter";
 import { SyncedPlayer, type SyncedVideo } from "./SyncedPlayer";
 import "./index.css";
 
@@ -51,6 +58,35 @@ export function WatchApp({ token, onLogout, isAdmin }: Props) {
   const [kickTarget, setKickTarget] = useState("");
   const [maxInput, setMaxInput] = useState("10");
   const [maxUnlimited, setMaxUnlimited] = useState(false);
+  const [playerFullscreen, setPlayerFullscreen] = useState(false);
+  const playerShellRef = useRef<HTMLDivElement>(null);
+
+  const syncPlayerFullscreen = useCallback(() => {
+    const shell = playerShellRef.current;
+    setPlayerFullscreen(!!shell && getFullscreenElement() === shell);
+  }, []);
+
+  useEffect(() => {
+    document.addEventListener("fullscreenchange", syncPlayerFullscreen);
+    document.addEventListener("webkitfullscreenchange", syncPlayerFullscreen);
+    return () => {
+      document.removeEventListener("fullscreenchange", syncPlayerFullscreen);
+      document.removeEventListener(
+        "webkitfullscreenchange",
+        syncPlayerFullscreen,
+      );
+    };
+  }, [syncPlayerFullscreen]);
+
+  const togglePlayerFullscreen = useCallback(() => {
+    const el = playerShellRef.current;
+    if (!el) return;
+    if (getFullscreenElement() === el) {
+      void exitFullscreen();
+    } else {
+      void enterFullscreen(el);
+    }
+  }, []);
 
   useEffect(() => {
     const s = io(socketUrl(), { auth: { token } });
@@ -298,10 +334,11 @@ export function WatchApp({ token, onLogout, isAdmin }: Props) {
   if (!socket || !socket.connected) {
     return (
       <div className="app lobby">
-        <h1>Watch Together</h1>
+        <h1>{APP_DISPLAY_NAME}</h1>
         <p className="muted">
           {socket ? "Connecting…" : "Initializing…"}
         </p>
+        <SiteFooter />
       </div>
     );
   }
@@ -325,7 +362,7 @@ export function WatchApp({ token, onLogout, isAdmin }: Props) {
             </button>
           </div>
         </header>
-        <h1>Watch Together</h1>
+        <h1>{APP_DISPLAY_NAME}</h1>
         <p className="muted">
           YouTube, Vimeo, direct video files, or generic embed URLs.
         </p>
@@ -346,6 +383,7 @@ export function WatchApp({ token, onLogout, isAdmin }: Props) {
             </button>
           </div>
         </div>
+        <SiteFooter />
       </div>
     );
   }
@@ -354,7 +392,7 @@ export function WatchApp({ token, onLogout, isAdmin }: Props) {
     <div className="app room">
       <header className="room-header">
         <div>
-          <h1>Watch Together</h1>
+          <h1>{APP_DISPLAY_NAME}</h1>
           <p className="muted">
             Room <strong>{roomId}</strong>
             {" · "}
@@ -388,23 +426,40 @@ export function WatchApp({ token, onLogout, isAdmin }: Props) {
 
       {banner && <p className="banner">{banner}</p>}
 
-      {video?.provider === "screenshare" && myId && hostSocketId ? (
-        <ScreenShareStage
-          socket={socket}
-          mySocketId={myId}
-          hostSocketId={hostSocketId}
-          isHost={isHost}
-          peers={peers}
-          onError={reportMediaError}
-        />
-      ) : (
-        <SyncedPlayer
-          socket={socket}
-          canControl={canControl}
-          video={video}
-          playback={playback}
-        />
-      )}
+      <div className="player-shell" ref={playerShellRef}>
+        <div className="player-shell__toolbar">
+          <button
+            type="button"
+            className="player-fullscreen-btn"
+            onClick={togglePlayerFullscreen}
+            aria-pressed={playerFullscreen}
+            title={
+              playerFullscreen
+                ? "Exit fullscreen (Esc)"
+                : "Fill the screen with the player"
+            }
+          >
+            {playerFullscreen ? "Exit fullscreen" : "Fullscreen"}
+          </button>
+        </div>
+        {video?.provider === "screenshare" && myId && hostSocketId ? (
+          <ScreenShareStage
+            socket={socket}
+            mySocketId={myId}
+            hostSocketId={hostSocketId}
+            isHost={isHost}
+            peers={peers}
+            onError={reportMediaError}
+          />
+        ) : (
+          <SyncedPlayer
+            socket={socket}
+            canControl={canControl}
+            video={video}
+            playback={playback}
+          />
+        )}
+      </div>
 
       {video?.provider === "iframe" && (
         <p className="hint">
@@ -501,6 +556,7 @@ export function WatchApp({ token, onLogout, isAdmin }: Props) {
       </section>
 
       <Chat socket={socket} disabled={false} />
+      <SiteFooter />
     </div>
   );
 }

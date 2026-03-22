@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { apiBase } from "./apiBase";
+import { SiteFooter } from "./SiteFooter";
 import "./index.css";
 
 type RoomRow = {
@@ -187,6 +188,7 @@ export function AdminPage({ token }: Props) {
           </tbody>
         </table>
       </div>
+      <SiteFooter />
     </div>
   );
 }
