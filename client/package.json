@@ -6,14 +6,19 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "start": "serve dist -s -l tcp://0.0.0.0:3000"
   },
   "dependencies": {
     "@vimeo/player": "^2.29.3",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-router-dom": "^7.1.1",
-    "socket.io-client": "^4.8.1"
+    "socket.io-client": "^4.8.1",
+    "serve": "^14.2.4"
+  },
+  "engines": {
+    "node": ">=18"
   },
   "devDependencies": {
     "@types/react": "^18.3.18",

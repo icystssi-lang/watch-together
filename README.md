@@ -61,7 +61,23 @@ npm run dev
 
 ## Deploy (e.g. Railway)
 
-The repo root [`package.json`](package.json) defines **`npm start`** (`node server/index.js`) and **`postinstall`** so Railway (and similar) install **server** dependencies from the monorepo root. Set **`JWT_SECRET`**, **`ADMIN_EMAIL`**, **`ADMIN_PASSWORD`**, and optionally **`DATABASE_PATH`** on a persistent volume. **`PORT`** is provided by the platform. For the browser client, build [`client`](client) with **`VITE_SOCKET_URL`** pointing at your deployed API/WebSocket origin.
+### API + WebSocket (Node)
+
+The repo root [`package.json`](package.json) defines **`npm start`** (`node server/index.js`) and **`postinstall`** so Railway install **server** dependencies from the monorepo root. Set **`JWT_SECRET`**, **`ADMIN_EMAIL`**, **`ADMIN_PASSWORD`**, and optionally **`DATABASE_PATH`** on a persistent volume. **`PORT`** is provided by the platform.
+
+### React client (separate Railway service)
+
+Use a **second** service in the same Railway project, pointed at the same repo:
+
+1. **Add service** → **GitHub Repo** → pick this repository again.
+2. **Settings → Root Directory**: `client`
+3. **Variables** (required at **build** time for Vite):
+   - **`VITE_SOCKET_URL`** — public **`https://…`** origin of your Node service (no trailing slash). Example: `https://watch-together-api.up.railway.app`
+   - Optional: **`VITE_WEBRTC_ICE_SERVERS`**, **`VITE_APP_COPYRIGHT_HOLDER`**, **`VITE_APP_BUILT_BY`** (same meaning as in [Configuration](#configuration)).
+4. Deploy. [`client/railway.json`](client/railway.json) sets **`npm ci && npm run build`** and starts **`serve`** on **`$PORT`** with SPA fallback (deep links like `/admin` work). If you change **`VITE_SOCKET_URL`**, trigger a new deploy so the bundle rebuilds.
+5. **Generate Domain** (or custom domain) on the **client** service for the public site URL.
+
+Local production check after `npm run build` in `client`: **`npm start`** serves `dist` on port **3000** (see [`client/package.json`](client/package.json)). Template: [`client/.env.production.example`](client/.env.production.example).
 
 ## Auth
 
