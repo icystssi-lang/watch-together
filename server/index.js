@@ -23,7 +23,8 @@ const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 const genRoomId = customAlphabet(alphabet, 8);
 
 const app = express();
-app.use(cors({ origin: true, credentials: true }));
+const corsOptions = createCorsOptions();
+app.use(cors(corsOptions));
 app.use(express.json({ limit: "48kb" }));
 
 app.get("/health", (_req, res) => res.json({ ok: true }));
