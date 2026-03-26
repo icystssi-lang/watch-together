@@ -21,8 +21,8 @@ import { SiteFooter } from "./SiteFooter";
 import {
   SyncedPlayer,
   type PlayerLoadState,
-  type SyncedVideo,
 } from "./SyncedPlayer";
+import type { VideoProvider } from "./resolveVideoUrl";
 import "./index.css";
 
 export type Peer = {
@@ -37,11 +37,18 @@ type RoomPayload = {
   onlyHostControls: boolean;
   videoProvider: string | null;
   videoSource: string | null;
+  audioOnly?: boolean;
   currentTime: number;
   isPlaying: boolean;
   username?: string;
   maxUsers?: number | null;
   peers?: Peer[];
+};
+
+type RoomVideo = {
+  provider: VideoProvider;
+  source: string;
+  audioOnly?: boolean;
 };
 
 type Props = {
@@ -57,7 +64,7 @@ export function WatchApp({ token, onLogout, isAdmin }: Props) {
   const [roomId, setRoomId] = useState<string | null>(null);
   const [hostSocketId, setHostSocketId] = useState<string | null>(null);
   const [onlyHostControls, setOnlyHostControls] = useState(false);
-  const [video, setVideo] = useState<SyncedVideo | null>(null);
+  const [video, setVideo] = useState<RoomVideo | null>(null);
   const [playback, setPlayback] = useState({ time: 0, isPlaying: false });
   const [joinInput, setJoinInput] = useState("");
   const [urlInput, setUrlInput] = useState("");
@@ -69,6 +76,7 @@ export function WatchApp({ token, onLogout, isAdmin }: Props) {
   const [transferTarget, setTransferTarget] = useState("");
   const [maxInput, setMaxInput] = useState("10");
   const [maxUnlimited, setMaxUnlimited] = useState(false);
+  const [audioOnlyInput, setAudioOnlyInput] = useState(false);
   const [playerFullscreen, setPlayerFullscreen] = useState(false);
   const [lobbyBusy, setLobbyBusy] = useState(false);
   const [lobbyAction, setLobbyAction] = useState<null | "create" | "join">(
@@ -278,8 +286,9 @@ export function WatchApp({ token, onLogout, isAdmin }: Props) {
     if (p.peers) setPeers(p.peers);
     if (p.videoProvider && p.videoSource) {
       setVideo({
-        provider: p.videoProvider as SyncedVideo["provider"],
+        provider: p.videoProvider as VideoProvider,
         source: p.videoSource,
+        audioOnly: Boolean(p.audioOnly),
       });
     } else {
       setVideo(null);
@@ -396,7 +405,7 @@ export function WatchApp({ token, onLogout, isAdmin }: Props) {
       const id = ++activityIdRef.current;
       setActivityLines([{ id, text: "You joined the room." }]);
     };
-    const onLoad = (d: { provider: string; source: string }) => {
+    const onLoad = (d: { provider: string; source: string; audioOnly?: boolean }) => {
       if (
         d.provider === "html5" &&
         d.source.startsWith("blob:") &&
@@ -407,8 +416,9 @@ export function WatchApp({ token, onLogout, isAdmin }: Props) {
         return;
       }
       setVideo({
-        provider: d.provider as SyncedVideo["provider"],
+        provider: d.provider as VideoProvider,
         source: d.source,
+        audioOnly: Boolean(d.audioOnly),
       });
       setPlayback({ time: 0, isPlaying: false });
       pushActivity("New video loaded.");
@@ -597,14 +607,22 @@ export function WatchApp({ token, onLogout, isAdmin }: Props) {
       return;
     }
     setBanner(null);
-    socket.emit("load_video", { provider: r.provider, source: r.source });
+    socket.emit("load_video", {
+      provider: r.provider,
+      source: r.source,
+      audioOnly: audioOnlyInput,
+    });
     setUrlInput("");
   }
 
   function startScreenShare() {
     if (!socket || !isHost) return;
     setBanner(null);
-    socket.emit("load_video", { provider: "screenshare", source: "stream" });
+    socket.emit("load_video", {
+      provider: "screenshare",
+      source: "stream",
+      audioOnly: audioOnlyInput,
+    });
   }
 
   function applyMaxUsers() {
@@ -771,6 +789,7 @@ export function WatchApp({ token, onLogout, isAdmin }: Props) {
                 hostSocketId={hostSocketId}
                 isHost={isHost}
                 peers={peers}
+                audioOnly={Boolean(video.audioOnly)}
                 onError={reportMediaError}
               />
             ) : (
@@ -815,9 +834,19 @@ export function WatchApp({ token, onLogout, isAdmin }: Props) {
                 disabled={!isHost || video?.provider === "screenshare"}
                 title="Host only — mesh WebRTC to viewers in this room"
               >
-                Share screen
+                {audioOnlyInput ? "Share screen audio" : "Share screen"}
               </button>
             </div>
+            {canControl && (
+              <label className="host-toggle">
+                <input
+                  type="checkbox"
+                  checked={audioOnlyInput}
+                  onChange={(e) => setAudioOnlyInput(e.target.checked)}
+                />
+                Audio-only mode for next load/share
+              </label>
+            )}
             {hostToggle}
             {isHost && (
               <div className="host-tools">

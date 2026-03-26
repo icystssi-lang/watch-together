@@ -15,6 +15,7 @@ type SharedCaptureState = {
   promise: Promise<MediaStream> | null;
   consumers: number;
   releaseTimer: number | null;
+  mode: "video" | "audio" | null;
 };
 
 const sharedCaptureState: SharedCaptureState = {
@@ -22,6 +23,7 @@ const sharedCaptureState: SharedCaptureState = {
   promise: null,
   consumers: 0,
   releaseTimer: null,
+  mode: null,
 };
 
 function stopStreamTracks(stream: MediaStream | null) {
@@ -39,6 +41,7 @@ function resetSharedCaptureState(stopTracks: boolean) {
   }
   sharedCaptureState.stream = null;
   sharedCaptureState.promise = null;
+  sharedCaptureState.mode = null;
 }
 
 function hasLiveVideoTrack(stream: MediaStream | null): boolean {
@@ -46,15 +49,29 @@ function hasLiveVideoTrack(stream: MediaStream | null): boolean {
   return stream.getVideoTracks().some((t) => t.readyState === "live");
 }
 
-async function getOrCreateSharedDisplayCapture(): Promise<MediaStream> {
-  if (hasLiveVideoTrack(sharedCaptureState.stream)) {
+function hasLiveAudioTrack(stream: MediaStream | null): boolean {
+  if (!stream) return false;
+  return stream.getAudioTracks().some((t) => t.readyState === "live");
+}
+
+async function getOrCreateSharedDisplayCapture(audioOnly: boolean): Promise<MediaStream> {
+  const wantedMode = audioOnly ? "audio" : "video";
+  const existing = sharedCaptureState.stream;
+  const hasWantedTrack = audioOnly
+    ? hasLiveAudioTrack(existing)
+    : hasLiveVideoTrack(existing);
+  if (hasWantedTrack && sharedCaptureState.mode === wantedMode) {
     return sharedCaptureState.stream as MediaStream;
+  }
+  if (existing && sharedCaptureState.mode !== wantedMode) {
+    resetSharedCaptureState(true);
   }
   if (!sharedCaptureState.promise) {
     sharedCaptureState.promise = navigator.mediaDevices
       .getDisplayMedia({ video: true, audio: true })
       .then((stream) => {
         sharedCaptureState.stream = stream;
+        sharedCaptureState.mode = wantedMode;
         return stream;
       })
       .catch((err) => {
@@ -71,6 +88,7 @@ type Props = {
   hostSocketId: string;
   isHost: boolean;
   peers: ScreenSharePeer[];
+  audioOnly: boolean;
   onError: (message: string) => void;
 };
 
@@ -80,12 +98,14 @@ export function ScreenShareStage({
   hostSocketId,
   isHost,
   peers,
+  audioOnly,
   onError,
 }: Props) {
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
   const hostPCsRef = useRef<Map<string, RTCPeerConnection>>(new Map());
   const localVideoRef = useRef<HTMLVideoElement>(null);
   const remoteVideoRef = useRef<HTMLVideoElement>(null);
+  const remoteAudioRef = useRef<HTMLAudioElement>(null);
   const [remoteReady, setRemoteReady] = useState(false);
   const [remoteBlocked, setRemoteBlocked] = useState(false);
   const [hostPeerStates, setHostPeerStates] = useState<Record<string, PeerConnState>>(
@@ -114,18 +134,21 @@ export function ScreenShareStage({
 
     void (async () => {
       try {
-        const stream = await getOrCreateSharedDisplayCapture();
+        const stream = await getOrCreateSharedDisplayCapture(audioOnly);
         mountedStream = stream;
         if (cancelled) {
           return;
         }
-        const [vt] = stream.getVideoTracks();
-        if (vt) {
-          vt.onended = () => {
-            stopStreamTracks(stream);
-            resetSharedCaptureState(false);
-            socket.emit("unload_video");
-          };
+        const watchedTracks = audioOnly
+          ? stream.getAudioTracks()
+          : stream.getVideoTracks();
+        const onEnded = () => {
+          stopStreamTracks(stream);
+          resetSharedCaptureState(false);
+          socket.emit("unload_video");
+        };
+        for (const track of watchedTracks) {
+          track.onended = onEnded;
         }
         setLocalStream(stream);
       } catch (e) {
@@ -140,7 +163,7 @@ export function ScreenShareStage({
     return () => {
       cancelled = true;
       if (mountedStream) {
-        mountedStream.getVideoTracks().forEach((t) => {
+        mountedStream.getTracks().forEach((t) => {
           t.onended = null;
         });
       }
@@ -153,7 +176,7 @@ export function ScreenShareStage({
       }
       setLocalStream(null);
     };
-  }, [isHost, socket, onError]);
+  }, [audioOnly, isHost, socket, onError]);
 
   useEffect(() => {
     if (!isHost || !localStream) {
@@ -228,7 +251,21 @@ export function ScreenShareStage({
       const pc = new RTCPeerConnection({ iceServers: getIceServers() });
       hostPCs.set(vid, pc);
       setHostPeerStates((prev) => ({ ...prev, [vid]: "connecting" }));
-      streamForPeers.getTracks().forEach((t) => pc.addTrack(t, streamForPeers));
+      const tracksToSend = audioOnly
+        ? streamForPeers.getAudioTracks()
+        : streamForPeers.getTracks();
+      if (!tracksToSend.length) {
+        onError(
+          audioOnly
+            ? "No shareable audio track was found. Choose a browser tab and enable tab audio."
+            : "No shareable screen video track was found.",
+        );
+        socket.emit("unload_video");
+        pc.close();
+        hostPCs.delete(vid);
+        return;
+      }
+      tracksToSend.forEach((t) => pc.addTrack(t, streamForPeers));
       pc.onicecandidate = (ev) => {
         if (ev.candidate) {
           socket.emit("rtc_signal", {
@@ -272,14 +309,14 @@ export function ScreenShareStage({
     return () => {
       socket.off("rtc_signal", onSignal);
     };
-  }, [isHost, localStream, peers, mySocketId, socket]);
+  }, [audioOnly, isHost, localStream, peers, mySocketId, onError, socket]);
 
   useEffect(() => {
     const v = localVideoRef.current;
-    if (v && localStream) {
+    if (v && localStream && !audioOnly) {
       v.srcObject = localStream;
     }
-  }, [localStream]);
+  }, [audioOnly, localStream]);
 
   useEffect(() => {
     if (isHost) return;
@@ -292,7 +329,7 @@ export function ScreenShareStage({
     let disposed = false;
 
     const tryStartRemotePlayback = async () => {
-      const el = remoteVideoRef.current;
+      const el = audioOnly ? remoteAudioRef.current : remoteVideoRef.current;
       if (!el || disposed || !el.srcObject) return;
       try {
         await el.play();
@@ -309,9 +346,9 @@ export function ScreenShareStage({
     };
 
     pc.ontrack = (ev) => {
-      const el = remoteVideoRef.current;
+      const el = audioOnly ? remoteAudioRef.current : remoteVideoRef.current;
       const incomingTrack = ev.track;
-      if (!el || !incomingTrack || incomingTrack.kind !== "video" || !ev.streams[0]) {
+      if (!el || !incomingTrack || !ev.streams[0]) {
         return;
       }
       const stream = ev.streams[0];
@@ -392,10 +429,10 @@ export function ScreenShareStage({
       setRemoteReady(false);
       setRemoteBlocked(false);
       setViewerConnState("new");
-      const el = remoteVideoRef.current;
-      if (el) el.srcObject = null;
+      const mediaEl = audioOnly ? remoteAudioRef.current : remoteVideoRef.current;
+      if (mediaEl) mediaEl.srcObject = null;
     };
-  }, [isHost, hostSocketId, onError, socket]);
+  }, [audioOnly, isHost, hostSocketId, onError, socket]);
 
   function badgeColors(state: PeerConnState): { bg: string; border: string } {
     if (state === "connected") return { bg: "#16361f", border: "#2e7d32" };
@@ -427,21 +464,25 @@ export function ScreenShareStage({
       <div className="synced-player-wrap">
         {!localStream && (
           <div className="synced-player-placeholder">
-            Starting screen capture…
+            {audioOnly ? "Starting screen audio capture…" : "Starting screen capture…"}
           </div>
         )}
-        <video
-          ref={localVideoRef}
-          autoPlay
-          playsInline
-          muted
-          style={{
-            width: "100%",
-            height: "100%",
-            objectFit: "contain",
-            display: localStream ? "block" : "none",
-          }}
-        />
+        {!audioOnly ? (
+          <video
+            ref={localVideoRef}
+            autoPlay
+            playsInline
+            muted
+            style={{
+              width: "100%",
+              height: "100%",
+              objectFit: "contain",
+              display: localStream ? "block" : "none",
+            }}
+          />
+        ) : (
+          <div className="synced-player-placeholder">Sharing screen audio only.</div>
+        )}
         <div
           style={{
             position: "absolute",
@@ -476,8 +517,9 @@ export function ScreenShareStage({
           }}
         >
           <span className="muted small" style={{ flex: 1, minWidth: 120 }}>
-            Sharing includes audio when the browser offers it (e.g. Chrome: pick a
-            tab and check &quot;Share tab audio&quot;).
+            {audioOnly
+              ? "Audio-only mode: choose a browser tab and enable tab audio."
+              : "Sharing includes audio when the browser offers it (e.g. Chrome: pick a tab and check \"Share tab audio\")."}
           </span>
           <button type="button" onClick={stopSharing}>
             Stop sharing
@@ -506,35 +548,44 @@ export function ScreenShareStage({
       </div>
       {!remoteReady && (
         <div className="synced-player-placeholder">
-          Waiting for host video…
+          {audioOnly ? "Waiting for host audio…" : "Waiting for host video…"}
         </div>
       )}
-      <video
-        ref={remoteVideoRef}
-        autoPlay
-        playsInline
-        muted={false}
-        controls={remoteBlocked}
-        onClick={() => {
-          const el = remoteVideoRef.current;
-          if (!el || !el.srcObject) return;
-          void el.play().then(
-            () => {
-              setRemoteReady(true);
-              setRemoteBlocked(false);
-            },
-            () => {
-              onError("Playback is still blocked by the browser. Use the play control.");
-            },
-          );
-        }}
-        style={{
-          width: "100%",
-          height: "100%",
-          objectFit: "contain",
-          display: remoteReady ? "block" : "none",
-        }}
-      />
+      {audioOnly ? (
+        <audio
+          ref={remoteAudioRef}
+          autoPlay
+          controls
+          style={{ width: "100%", display: remoteReady || remoteBlocked ? "block" : "none" }}
+        />
+      ) : (
+        <video
+          ref={remoteVideoRef}
+          autoPlay
+          playsInline
+          muted={false}
+          controls={remoteBlocked}
+          onClick={() => {
+            const el = remoteVideoRef.current;
+            if (!el || !el.srcObject) return;
+            void el.play().then(
+              () => {
+                setRemoteReady(true);
+                setRemoteBlocked(false);
+              },
+              () => {
+                onError("Playback is still blocked by the browser. Use the play control.");
+              },
+            );
+          }}
+          style={{
+            width: "100%",
+            height: "100%",
+            objectFit: "contain",
+            display: remoteReady ? "block" : "none",
+          }}
+        />
+      )}
     </div>
   );
 }

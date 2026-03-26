@@ -18,6 +18,7 @@ export interface VideoAdapter {
 
 export type CreateAdapterOptions = {
   source: string;
+  audioOnly?: boolean;
   onUserEvent: (e: UserVideoEvent) => void;
 };
 

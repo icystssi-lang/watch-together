@@ -84,9 +84,17 @@ export async function createYoutubeAdapter(
     mount(container: HTMLElement) {
       destroyed = false;
       container.innerHTML = "";
+      if (opts.audioOnly) {
+        const note = document.createElement("div");
+        note.className = "synced-player-placeholder";
+        note.textContent = "Audio-only mode: YouTube video is hidden.";
+        container.appendChild(note);
+      }
       const el = document.createElement("div");
-      el.style.width = "100%";
-      el.style.height = "100%";
+      el.style.width = opts.audioOnly ? "1px" : "100%";
+      el.style.height = opts.audioOnly ? "1px" : "100%";
+      el.style.opacity = opts.audioOnly ? "0.01" : "1";
+      el.style.pointerEvents = opts.audioOnly ? "none" : "auto";
       container.appendChild(el);
 
       instance = new window.YT!.Player(el, {

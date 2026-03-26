@@ -4,7 +4,11 @@ import { createVideoAdapter } from "./adapters";
 import type { VideoAdapter } from "./adapters/types";
 import type { VideoProvider } from "./resolveVideoUrl";
 
-export type SyncedVideo = { provider: VideoProvider; source: string };
+export type SyncedVideo = {
+  provider: VideoProvider;
+  source: string;
+  audioOnly?: boolean;
+};
 
 type Playback = { time: number; isPlaying: boolean };
 
@@ -89,6 +93,7 @@ export function SyncedPlayer({
       try {
         const adapter = await createVideoAdapter(video.provider, {
           source: video.source,
+          audioOnly: Boolean(video.audioOnly),
           onUserEvent: (e) => {
             if (!canControlRef.current) return;
             if (e.type === "play") socket.emit("play", { time: e.time });

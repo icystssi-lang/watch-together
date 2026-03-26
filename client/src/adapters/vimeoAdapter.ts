@@ -18,9 +18,17 @@ export async function createVimeoAdapter(
 
     mount(container: HTMLElement) {
       container.innerHTML = "";
+      if (opts.audioOnly) {
+        const note = document.createElement("div");
+        note.className = "synced-player-placeholder";
+        note.textContent = "Audio-only mode: Vimeo video is hidden.";
+        container.appendChild(note);
+      }
       const div = document.createElement("div");
-      div.style.width = "100%";
-      div.style.height = "100%";
+      div.style.width = opts.audioOnly ? "1px" : "100%";
+      div.style.height = opts.audioOnly ? "1px" : "100%";
+      div.style.opacity = opts.audioOnly ? "0.01" : "1";
+      div.style.pointerEvents = opts.audioOnly ? "none" : "auto";
       container.appendChild(div);
 
       const id = Number(opts.source);
