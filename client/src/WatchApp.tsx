@@ -66,6 +66,7 @@ export function WatchApp({ token, onLogout, isAdmin }: Props) {
   const [maxUsers, setMaxUsers] = useState<number | null>(10);
   const [peers, setPeers] = useState<Peer[]>([]);
   const [kickTarget, setKickTarget] = useState("");
+  const [transferTarget, setTransferTarget] = useState("");
   const [maxInput, setMaxInput] = useState("10");
   const [maxUnlimited, setMaxUnlimited] = useState(false);
   const [playerFullscreen, setPlayerFullscreen] = useState(false);
@@ -79,11 +80,16 @@ export function WatchApp({ token, onLogout, isAdmin }: Props) {
   const roomIdRef = useRef(roomId);
   const peersRef = useRef(peers);
   const pendingRejoinRoomIdRef = useRef<string | null>(null);
+  const hostSocketIdRef = useRef<string | null>(hostSocketId);
   const activityIdRef = useRef(0);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const activeLocalBlobUrlRef = useRef<string | null>(null);
+  const pendingHostTransferTargetRef = useRef<string | null>(null);
 
   phaseRef.current = phase;
   roomIdRef.current = roomId;
   peersRef.current = peers;
+  hostSocketIdRef.current = hostSocketId;
 
   const playerShellRef = useRef<HTMLDivElement>(null);
   const fullscreenModeRef = useRef<"none" | "dom" | "pseudo" | "ios-video">(
@@ -246,6 +252,10 @@ export function WatchApp({ token, onLogout, isAdmin }: Props) {
   }, [token]);
 
   const resetRoomStateToLobby = useCallback(() => {
+    if (activeLocalBlobUrlRef.current) {
+      URL.revokeObjectURL(activeLocalBlobUrlRef.current);
+      activeLocalBlobUrlRef.current = null;
+    }
     setRoomId(null);
     setHostSocketId(null);
     setVideo(null);
@@ -275,6 +285,24 @@ export function WatchApp({ token, onLogout, isAdmin }: Props) {
       setVideo(null);
     }
   }, []);
+
+  useEffect(() => {
+    return () => {
+      if (activeLocalBlobUrlRef.current) {
+        URL.revokeObjectURL(activeLocalBlobUrlRef.current);
+        activeLocalBlobUrlRef.current = null;
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    const active = activeLocalBlobUrlRef.current;
+    if (!active) return;
+    if (!video || video.provider !== "html5" || video.source !== active) {
+      URL.revokeObjectURL(active);
+      activeLocalBlobUrlRef.current = null;
+    }
+  }, [video]);
 
   useEffect(() => {
     if (!socket) return;
@@ -369,6 +397,15 @@ export function WatchApp({ token, onLogout, isAdmin }: Props) {
       setActivityLines([{ id, text: "You joined the room." }]);
     };
     const onLoad = (d: { provider: string; source: string }) => {
+      if (
+        d.provider === "html5" &&
+        d.source.startsWith("blob:") &&
+        socket.id !== hostSocketIdRef.current
+      ) {
+        setBanner("Host loaded a local file. Ask host to use screen share to share it.");
+        pushActivity("Host loaded a local-only file.");
+        return;
+      }
       setVideo({
         provider: d.provider as SyncedVideo["provider"],
         source: d.source,
@@ -384,9 +421,28 @@ export function WatchApp({ token, onLogout, isAdmin }: Props) {
       setPlayback((prev) => ({ ...prev, time }));
     const onHostControls = ({ enabled }: { enabled: boolean }) =>
       setOnlyHostControls(enabled);
-    const onHostChanged = ({ hostSocketId: id }: { hostSocketId: string }) =>
+    const onHostChanged = ({ hostSocketId: id }: { hostSocketId: string }) => {
+      const prevHostId = hostSocketIdRef.current;
       setHostSocketId(id);
-    const onDenied = () => setBanner("That action is not allowed (host only).");
+
+      const newHost = peersRef.current.find((p) => p.socketId === id);
+      const hostLabel = newHost?.displayName ?? `Host ${id.slice(0, 6)}…`;
+      pushActivity(`Host changed: ${hostLabel}.`);
+
+      if (pendingHostTransferTargetRef.current === id) {
+        setBanner(`Host transferred to ${hostLabel}.`);
+      } else if (id === myId) {
+        setBanner("You are now the host.");
+      } else if (prevHostId === myId) {
+        setBanner(`Host changed to ${hostLabel}.`);
+      }
+      pendingHostTransferTargetRef.current = null;
+      setTransferTarget("");
+    };
+    const onDenied = () => {
+      pendingHostTransferTargetRef.current = null;
+      setBanner("That action is not allowed (host only).");
+    };
     const onJoinErr = (e: { error?: string }) => {
       pendingRejoinRoomIdRef.current = null;
       setLobbyBusy(false);
@@ -468,6 +524,7 @@ export function WatchApp({ token, onLogout, isAdmin }: Props) {
     teardownPlayerFullscreen,
     resetRoomStateToLobby,
     pushActivity,
+    myId,
   ]);
 
   useEffect(() => {
@@ -569,6 +626,30 @@ export function WatchApp({ token, onLogout, isAdmin }: Props) {
     if (!socket || !isHost || !kickTarget) return;
     socket.emit("kick_participant", { targetSocketId: kickTarget });
     setKickTarget("");
+  }
+
+  function transferHost() {
+    if (!socket || !isHost || !transferTarget) return;
+    pendingHostTransferTargetRef.current = transferTarget;
+    socket.emit("transfer_host", { targetSocketId: transferTarget });
+  }
+
+  function loadLocalVideoFromDevice(file: File | null) {
+    if (!socket || !isHost || !file) return;
+    if (!file.type.startsWith("video/")) {
+      setBanner("Please choose a valid video file.");
+      return;
+    }
+    if (activeLocalBlobUrlRef.current) {
+      URL.revokeObjectURL(activeLocalBlobUrlRef.current);
+    }
+    const objectUrl = URL.createObjectURL(file);
+    activeLocalBlobUrlRef.current = objectUrl;
+    socket.emit("load_video", { provider: "html5", source: objectUrl });
+    setBanner(`Loaded local file: ${file.name}`);
+    if (fileInputRef.current) {
+      fileInputRef.current.value = "";
+    }
   }
 
   const hostToggle = useMemo(
@@ -744,6 +825,16 @@ export function WatchApp({ token, onLogout, isAdmin }: Props) {
                   Room capacity (host)
                 </p>
                 <div className="load-row">
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    accept="video/*"
+                    onChange={(e) => {
+                      loadLocalVideoFromDevice(e.target.files?.[0] ?? null);
+                    }}
+                  />
+                </div>
+                <div className="load-row">
                   <label className="host-toggle">
                     <input
                       type="checkbox"
@@ -786,6 +877,29 @@ export function WatchApp({ token, onLogout, isAdmin }: Props) {
                     disabled={!kickTarget}
                   >
                     Kick
+                  </button>
+                </div>
+                <div className="load-row">
+                  <select
+                    value={transferTarget}
+                    onChange={(e) => setTransferTarget(e.target.value)}
+                    className="kick-select"
+                  >
+                    <option value="">Transfer host to…</option>
+                    {peers
+                      .filter((p) => p.socketId !== myId)
+                      .map((p) => (
+                        <option key={p.socketId} value={p.socketId}>
+                          {p.displayName} ({p.socketId.slice(0, 6)}…)
+                        </option>
+                      ))}
+                  </select>
+                  <button
+                    type="button"
+                    onClick={transferHost}
+                    disabled={!transferTarget}
+                  >
+                    Transfer host
                   </button>
                 </div>
               </div>

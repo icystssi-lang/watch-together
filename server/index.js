@@ -305,6 +305,33 @@ io.on("connection", (socket) => {
     target.disconnect(true);
   });
 
+  socket.on("transfer_host", (data) => {
+    const roomId = socketRoom.get(socket.id);
+    const room = roomId ? rooms.get(roomId) : null;
+    if (!room) return;
+
+    if (!isHost(socket.id, room)) {
+      socket.emit("control_denied", { reason: "not_host" });
+      return;
+    }
+
+    const targetSocketId =
+      typeof data?.targetSocketId === "string" ? data.targetSocketId : "";
+    if (!targetSocketId || targetSocketId === socket.id) return;
+    if (!socketsInSameRoom(roomId, socket.id, targetSocketId)) return;
+
+    room.hostSocketId = targetSocketId;
+    io.to(roomId).emit("host_changed", { hostSocketId: targetSocketId });
+    auditLog(socket.data.userSub, "host_transferred_manual", {
+      roomId,
+      toSocketId: targetSocketId,
+    });
+    logger.info(
+      { roomId, fromSocketId: socket.id, toSocketId: targetSocketId },
+      "host_transferred_manual"
+    );
+  });
+
   socket.on("set_room_max_users", (data) => {
     const roomId = socketRoom.get(socket.id);
     const room = roomId ? rooms.get(roomId) : null;
