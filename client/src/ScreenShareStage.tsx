@@ -8,6 +8,7 @@ type RtcPayload =
   | { type: "offer"; sdp: string }
   | { type: "answer"; sdp: string }
   | { type: "ice"; candidate: RTCIceCandidateInit };
+type PeerConnState = RTCPeerConnectionState | "new";
 
 type Props = {
   socket: Socket;
@@ -31,6 +32,11 @@ export function ScreenShareStage({
   const localVideoRef = useRef<HTMLVideoElement>(null);
   const remoteVideoRef = useRef<HTMLVideoElement>(null);
   const [remoteReady, setRemoteReady] = useState(false);
+  const [remoteBlocked, setRemoteBlocked] = useState(false);
+  const [hostPeerStates, setHostPeerStates] = useState<Record<string, PeerConnState>>(
+    {},
+  );
+  const [viewerConnState, setViewerConnState] = useState<PeerConnState>("new");
 
   useEffect(() => {
     return () => {
@@ -88,6 +94,7 @@ export function ScreenShareStage({
           pc.close();
         }
         hostPCsRef.current.clear();
+        setHostPeerStates({});
       }
       return;
     }
@@ -104,6 +111,11 @@ export function ScreenShareStage({
         pc.close();
         hostPCs.delete(id);
         pendingIceByViewer.delete(id);
+        setHostPeerStates((prev) => {
+          const next = { ...prev };
+          delete next[id];
+          return next;
+        });
       }
     }
 
@@ -147,6 +159,7 @@ export function ScreenShareStage({
       if (hostPCs.has(vid)) return;
       const pc = new RTCPeerConnection({ iceServers: getIceServers() });
       hostPCs.set(vid, pc);
+      setHostPeerStates((prev) => ({ ...prev, [vid]: "connecting" }));
       streamForPeers.getTracks().forEach((t) => pc.addTrack(t, streamForPeers));
       pc.onicecandidate = (ev) => {
         if (ev.candidate) {
@@ -154,6 +167,19 @@ export function ScreenShareStage({
             targetSocketId: vid,
             payload: { type: "ice", candidate: ev.candidate.toJSON() },
           });
+        }
+      };
+      pc.oniceconnectionstatechange = () => {
+        if (pc.iceConnectionState === "failed") {
+          onError(
+            "A viewer could not receive screen share. TURN may be required in production.",
+          );
+        }
+      };
+      pc.onconnectionstatechange = () => {
+        setHostPeerStates((prev) => ({ ...prev, [vid]: pc.connectionState }));
+        if (pc.connectionState === "failed") {
+          onError("A viewer WebRTC connection failed during screen share.");
         }
       };
       try {
@@ -191,14 +217,44 @@ export function ScreenShareStage({
     if (isHost) return;
 
     setRemoteReady(false);
+    setRemoteBlocked(false);
+    setViewerConnState("connecting");
     const pc = new RTCPeerConnection({ iceServers: getIceServers() });
     const pendingIce: RTCIceCandidateInit[] = [];
+    let disposed = false;
+
+    const tryStartRemotePlayback = async () => {
+      const el = remoteVideoRef.current;
+      if (!el || disposed || !el.srcObject) return;
+      try {
+        await el.play();
+        if (!disposed) {
+          setRemoteReady(true);
+          setRemoteBlocked(false);
+        }
+      } catch {
+        if (!disposed) {
+          setRemoteBlocked(true);
+          onError("Browser blocked autoplay. Click the video area to start playback.");
+        }
+      }
+    };
 
     pc.ontrack = (ev) => {
       const el = remoteVideoRef.current;
-      if (el && ev.streams[0]) {
-        el.srcObject = ev.streams[0];
-        setRemoteReady(true);
+      const incomingTrack = ev.track;
+      if (!el || !incomingTrack || incomingTrack.kind !== "video" || !ev.streams[0]) {
+        return;
+      }
+      const stream = ev.streams[0];
+      el.srcObject = stream;
+      if (!incomingTrack.muted) {
+        void tryStartRemotePlayback();
+      } else {
+        incomingTrack.onunmute = () => {
+          incomingTrack.onunmute = null;
+          void tryStartRemotePlayback();
+        };
       }
     };
     pc.onicecandidate = (ev) => {
@@ -207,6 +263,17 @@ export function ScreenShareStage({
           targetSocketId: hostSocketId,
           payload: { type: "ice", candidate: ev.candidate.toJSON() },
         });
+      }
+    };
+    pc.oniceconnectionstatechange = () => {
+      if (pc.iceConnectionState === "failed") {
+        onError("Screen share connection failed. TURN may be required in production.");
+      }
+    };
+    pc.onconnectionstatechange = () => {
+      setViewerConnState(pc.connectionState);
+      if (pc.connectionState === "failed") {
+        onError("WebRTC connection failed. Ask host to restart sharing.");
       }
     };
 
@@ -251,13 +318,24 @@ export function ScreenShareStage({
     socket.on("rtc_signal", onSignal);
 
     return () => {
+      disposed = true;
       socket.off("rtc_signal", onSignal);
       pc.close();
       setRemoteReady(false);
+      setRemoteBlocked(false);
+      setViewerConnState("new");
       const el = remoteVideoRef.current;
       if (el) el.srcObject = null;
     };
-  }, [isHost, hostSocketId, socket]);
+  }, [isHost, hostSocketId, onError, socket]);
+
+  function badgeColors(state: PeerConnState): { bg: string; border: string } {
+    if (state === "connected") return { bg: "#16361f", border: "#2e7d32" };
+    if (state === "failed" || state === "disconnected") {
+      return { bg: "#3a1c1c", border: "#b3261e" };
+    }
+    return { bg: "#1f2430", border: "#4f5b76" };
+  }
 
   function stopSharing() {
     localStream?.getTracks().forEach((t) => t.stop());
@@ -270,6 +348,12 @@ export function ScreenShareStage({
   }
 
   if (isHost) {
+    const peerStateValues = Object.values(hostPeerStates);
+    const connectedCount = peerStateValues.filter((s) => s === "connected").length;
+    const connectingCount = peerStateValues.filter((s) => s === "connecting").length;
+    const failedCount = peerStateValues.filter(
+      (s) => s === "failed" || s === "disconnected",
+    ).length;
     return (
       <div className="synced-player-wrap">
         {!localStream && (
@@ -289,6 +373,27 @@ export function ScreenShareStage({
             display: localStream ? "block" : "none",
           }}
         />
+        <div
+          style={{
+            position: "absolute",
+            top: 8,
+            right: 8,
+            fontSize: 12,
+            padding: "4px 8px",
+            borderRadius: 999,
+            background:
+              failedCount > 0
+                ? "#3a1c1c"
+                : connectingCount > 0
+                  ? "#1f2430"
+                  : "#16361f",
+            border: "1px solid #4f5b76",
+          }}
+        >
+          {`Peers: ${connectedCount} connected`}
+          {connectingCount > 0 ? `, ${connectingCount} connecting` : ""}
+          {failedCount > 0 ? `, ${failedCount} failed` : ""}
+        </div>
         <div
           style={{
             position: "absolute",
@@ -313,8 +418,23 @@ export function ScreenShareStage({
     );
   }
 
+  const viewerBadge = badgeColors(viewerConnState);
   return (
     <div className="synced-player-wrap">
+      <div
+        style={{
+          position: "absolute",
+          top: 8,
+          right: 8,
+          fontSize: 12,
+          padding: "4px 8px",
+          borderRadius: 999,
+          background: viewerBadge.bg,
+          border: `1px solid ${viewerBadge.border}`,
+        }}
+      >
+        {`WebRTC: ${viewerConnState}`}
+      </div>
       {!remoteReady && (
         <div className="synced-player-placeholder">
           Waiting for host video…
@@ -325,6 +445,20 @@ export function ScreenShareStage({
         autoPlay
         playsInline
         muted={false}
+        controls={remoteBlocked}
+        onClick={() => {
+          const el = remoteVideoRef.current;
+          if (!el || !el.srcObject) return;
+          void el.play().then(
+            () => {
+              setRemoteReady(true);
+              setRemoteBlocked(false);
+            },
+            () => {
+              onError("Playback is still blocked by the browser. Use the play control.");
+            },
+          );
+        }}
         style={{
           width: "100%",
           height: "100%",

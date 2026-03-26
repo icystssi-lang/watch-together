@@ -62,6 +62,16 @@ npm run dev
 
 ## Deploy (e.g. Railway)
 
+### Screen share production checklist
+
+If viewers see a black screen while room/chat still work, verify all of these:
+
+- `VITE_SOCKET_URL` points to the public `https://` API origin used by clients (no trailing slash).
+- `VITE_WEBRTC_ICE_SERVERS` includes a TURN server, not only STUN.
+- Frontend is served over HTTPS (required for `getDisplayMedia` outside localhost).
+- `CORS_ORIGIN` includes the exact frontend origin when API and client are on different hosts.
+- Reverse proxy forwards Socket.IO correctly (websocket upgrade + polling).
+
 ### API + WebSocket (Node)
 
 The repo root [`package.json`](package.json) defines **`npm start`** (`node server/index.js`) and **`postinstall`** so Railway install **server** dependencies from the monorepo root. Set **`JWT_SECRET`**, **`ADMIN_EMAIL`**, **`ADMIN_PASSWORD`**, and optionally **`DATABASE_PATH`** on a persistent volume. If the React app uses a **different** public URL than the API, set **`CORS_ORIGIN`** to that client origin (see [Configuration](#configuration)). **`PORT`** is provided by the platform.
@@ -74,7 +84,8 @@ Use a **second** service in the same Railway project, pointed at the same repo:
 2. **Settings → Root Directory**: `client`
 3. **Variables** (required at **build** time for Vite):
    - **`VITE_SOCKET_URL`** — public **`https://…`** origin of your Node service (no trailing slash). Example: `https://watch-together-api.up.railway.app`
-   - Optional: **`VITE_WEBRTC_ICE_SERVERS`**, **`VITE_APP_COPYRIGHT_HOLDER`**, **`VITE_APP_BUILT_BY`** (same meaning as in [Configuration](#configuration)).
+   - **`VITE_WEBRTC_ICE_SERVERS`** — strongly recommended in production; include TURN for reliable screen share across NAT/firewalls.
+   - Optional: **`VITE_APP_COPYRIGHT_HOLDER`**, **`VITE_APP_BUILT_BY`** (same meaning as in [Configuration](#configuration)).
 4. Deploy. [`client/railway.json`](client/railway.json) uses **`npm run build`** for the build phase and **`serve`** on **`$PORT`** with SPA fallback (e.g. `/admin`). Railpack already runs **`npm ci`** during install, so the build command must not run **`npm ci`** again (that can **`EBUSY`** on `node_modules/.vite`). Redeploy after changing **`VITE_SOCKET_URL`**.
 5. **Generate Domain** (or custom domain) on the **client** service for the public site URL.
 
