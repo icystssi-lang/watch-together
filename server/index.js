@@ -2,6 +2,7 @@ import express from "express";
 import { createServer } from "http";
 import { Server } from "socket.io";
 import cors from "cors";
+import bcrypt from "bcrypt";
 import { customAlphabet, nanoid } from "nanoid";
 import { createRoomState, isValidProvider } from "./rooms.js";
 import { initDb, bootstrapAdmin, isBannedSubject } from "./db.js";
@@ -58,9 +59,33 @@ function getRoomsSnapshot() {
       maxUsers: room.maxUsers,
       onlyHostControls: room.onlyHostControls,
       videoProvider: room.videoProvider,
+      joinMode: room.joinMode,
+      requiresPassword: room.joinMode === "password",
     });
   }
   return out;
+}
+
+function getPublicRoomsSnapshot() {
+  const out = [];
+  for (const [, room] of rooms) {
+    if (room.joinMode === "password") continue;
+    const set = io.sockets.adapter.rooms.get(room.roomId);
+    const memberCount = set ? set.size : 0;
+    out.push({
+      roomId: room.roomId,
+      memberCount,
+      maxUsers: room.maxUsers,
+      onlyHostControls: room.onlyHostControls,
+      videoProvider: room.videoProvider,
+      requiresPassword: false,
+    });
+  }
+  return out;
+}
+
+function emitPublicRooms() {
+  io.emit("public_rooms", { rooms: getPublicRoomsSnapshot() });
 }
 
 app.use("/api/auth", createAuthRouter());
@@ -133,6 +158,7 @@ function buildPayload(socket, room) {
     username: socket.data.displayName,
     maxUsers: room.maxUsers,
     peers: getPeersInRoom(room.roomId),
+    requiresPassword: room.joinMode === "password",
   };
 }
 
@@ -164,6 +190,7 @@ function leaveRoom(socket, notifyOthers = true) {
   if (count === 0) {
     rooms.delete(roomId);
     logger.info({ roomId }, "room_deleted_empty");
+    emitPublicRooms();
     return;
   }
 
@@ -184,6 +211,9 @@ function leaveRoom(socket, notifyOthers = true) {
   }
 
   broadcastPeers(roomId);
+  if (room.joinMode !== "password") {
+    emitPublicRooms();
+  }
 }
 
 function socketsInSameRoom(roomId, a, b) {
@@ -226,12 +256,35 @@ io.on("connection", (socket) => {
     "socket_connect"
   );
 
-  socket.on("create_room", (ack) => {
+  socket.on("get_public_rooms", (ack) => {
+    const payload = { rooms: getPublicRoomsSnapshot() };
+    if (typeof ack === "function") ack(payload);
+    socket.emit("public_rooms", payload);
+  });
+
+  socket.on("create_room", (dataOrAck, maybeAck) => {
     leaveRoom(socket, false);
+    const data =
+      dataOrAck && typeof dataOrAck === "object" && !Array.isArray(dataOrAck)
+        ? dataOrAck
+        : {};
+    const ack = typeof dataOrAck === "function" ? dataOrAck : maybeAck;
+    const joinMode = data?.joinMode === "password" ? "password" : "open";
+    const passwordRaw = typeof data?.password === "string" ? data.password.trim() : "";
+    if (joinMode === "password" && passwordRaw.length < 4) {
+      const err = { error: "password_too_short" };
+      if (typeof ack === "function") ack(err);
+      socket.emit("join_error", err);
+      return;
+    }
+
     let roomId = genRoomId();
     while (rooms.has(roomId)) roomId = genRoomId();
 
     const room = createRoomState(roomId, socket.id);
+    room.joinMode = joinMode;
+    room.joinPasswordHash =
+      joinMode === "password" ? bcrypt.hashSync(passwordRaw, 10) : null;
     rooms.set(roomId, room);
     socket.join(roomId);
     socketRoom.set(socket.id, roomId);
@@ -243,12 +296,13 @@ io.on("connection", (socket) => {
     if (typeof ack === "function") ack(payload);
     socket.emit("room_joined", payload);
     broadcastPeers(roomId);
+    emitPublicRooms();
   });
 
   socket.on("join_room", (data, ack) => {
     const roomId = data?.roomId?.toUpperCase?.()?.trim();
     if (!roomId || !rooms.has(roomId)) {
-      const err = { error: "Room not found" };
+      const err = { error: "room_not_found" };
       if (typeof ack === "function") ack(err);
       socket.emit("join_error", err);
       auditLog(socket.data.userSub, "room_join_denied", { roomId, reason: "not_found" });
@@ -267,6 +321,34 @@ io.on("connection", (socket) => {
       return;
     }
 
+    if (room.joinMode === "password") {
+      const providedPassword =
+        typeof data?.password === "string" ? data.password.trim() : "";
+      if (!providedPassword) {
+        const err = { error: "password_required" };
+        if (typeof ack === "function") ack(err);
+        socket.emit("join_error", err);
+        auditLog(socket.data.userSub, "room_join_denied", {
+          roomId,
+          reason: "password_required",
+        });
+        return;
+      }
+      const isMatch = room.joinPasswordHash
+        ? bcrypt.compareSync(providedPassword, room.joinPasswordHash)
+        : false;
+      if (!isMatch) {
+        const err = { error: "invalid_password" };
+        if (typeof ack === "function") ack(err);
+        socket.emit("join_error", err);
+        auditLog(socket.data.userSub, "room_join_denied", {
+          roomId,
+          reason: "invalid_password",
+        });
+        return;
+      }
+    }
+
     socket.join(roomId);
     socketRoom.set(socket.id, roomId);
 
@@ -282,6 +364,9 @@ io.on("connection", (socket) => {
     if (typeof ack === "function") ack(payload);
     socket.emit("room_joined", payload);
     broadcastPeers(roomId);
+    if (room.joinMode !== "password") {
+      emitPublicRooms();
+    }
   });
 
   socket.on("leave_room", () => {
@@ -376,6 +461,9 @@ io.on("connection", (socket) => {
       maxUsers: room.maxUsers,
     });
     io.to(roomId).emit("room_settings_changed", { maxUsers: room.maxUsers });
+    if (room.joinMode !== "password") {
+      emitPublicRooms();
+    }
   });
 
   socket.on("load_video", (data) => {
@@ -541,6 +629,9 @@ io.on("connection", (socket) => {
     const enabled = Boolean(data?.enabled);
     room.onlyHostControls = enabled;
     io.to(roomId).emit("host_controls_changed", { enabled });
+    if (room.joinMode !== "password") {
+      emitPublicRooms();
+    }
   });
 
   socket.on("send_message", (data) => {

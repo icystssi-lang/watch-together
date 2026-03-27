@@ -43,6 +43,16 @@ type RoomPayload = {
   username?: string;
   maxUsers?: number | null;
   peers?: Peer[];
+  requiresPassword?: boolean;
+};
+
+type PublicRoom = {
+  roomId: string;
+  memberCount: number;
+  maxUsers: number | null;
+  onlyHostControls: boolean;
+  videoProvider: string | null;
+  requiresPassword: boolean;
 };
 
 type RoomVideo = {
@@ -72,6 +82,9 @@ export function WatchApp({ token, onLogout, isAdmin }: Props) {
   const [video, setVideo] = useState<RoomVideo | null>(null);
   const [playback, setPlayback] = useState({ time: 0, isPlaying: false });
   const [joinInput, setJoinInput] = useState("");
+  const [joinPassword, setJoinPassword] = useState("");
+  const [createJoinMode, setCreateJoinMode] = useState<"open" | "password">("open");
+  const [createPassword, setCreatePassword] = useState("");
   const [urlInput, setUrlInput] = useState("");
   const [banner, setBanner] = useState<string | null>(null);
   const [username, setUsername] = useState<string | null>(null);
@@ -88,11 +101,13 @@ export function WatchApp({ token, onLogout, isAdmin }: Props) {
     null,
   );
   const [activityLines, setActivityLines] = useState<ActivityLine[]>([]);
+  const [publicRooms, setPublicRooms] = useState<PublicRoom[]>([]);
 
   const phaseRef = useRef(phase);
   const roomIdRef = useRef(roomId);
   const peersRef = useRef(peers);
   const pendingRejoinRoomIdRef = useRef<string | null>(null);
+  const pendingRejoinPasswordRef = useRef<string>("");
   const hostSocketIdRef = useRef<string | null>(hostSocketId);
   const activityIdRef = useRef(0);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -363,8 +378,12 @@ export function WatchApp({ token, onLogout, isAdmin }: Props) {
         setLobbyBusy(true);
         setLobbyAction("join");
         setBanner("Reconnecting to room…");
-        socket.emit("join_room", { roomId: rid });
+        socket.emit("join_room", {
+          roomId: rid,
+          password: pendingRejoinPasswordRef.current || undefined,
+        });
       }
+      socket.emit("get_public_rooms");
     };
 
     const onDisconnect = (reason: string) => {
@@ -486,6 +505,7 @@ export function WatchApp({ token, onLogout, isAdmin }: Props) {
       pendingRejoinRoomIdRef.current = null;
       setLobbyBusy(false);
       setLobbyAction(null);
+      setJoinPassword("");
       applyRoomPayload(p);
       setPhase("room");
       setBanner(null);
@@ -544,11 +564,14 @@ export function WatchApp({ token, onLogout, isAdmin }: Props) {
       pendingRejoinRoomIdRef.current = null;
       setLobbyBusy(false);
       setLobbyAction(null);
-      if (e?.error === "room_full") {
-        setBanner("This room is full. Ask the host to raise the limit.");
-      } else {
-        setBanner("Room not found or you can no longer join.");
-      }
+      if (e?.error === "room_full") setBanner("This room is full. Ask the host to raise the limit.");
+      else if (e?.error === "password_required") setBanner("Password required for this room.");
+      else if (e?.error === "invalid_password") setBanner("Incorrect room password.");
+      else if (e?.error === "password_too_short") setBanner("Room password must be at least 4 characters.");
+      else setBanner("Room not found or you can no longer join.");
+    };
+    const onPublicRooms = ({ rooms }: { rooms: PublicRoom[] }) => {
+      setPublicRooms(Array.isArray(rooms) ? rooms : []);
     };
     const onPeers = ({ peers: list }: { peers: Peer[] }) => setPeers(list);
     const onSettings = ({ maxUsers: m }: { maxUsers: number | null }) => {
@@ -595,6 +618,7 @@ export function WatchApp({ token, onLogout, isAdmin }: Props) {
     socket.on("join_error", onJoinErr);
     socket.on("room_peers", onPeers);
     socket.on("room_settings_changed", onSettings);
+    socket.on("public_rooms", onPublicRooms);
     socket.on("you_were_kicked", onKicked);
     socket.on("user_joined", onUserJoined);
     socket.on("user_left", onUserLeft);
@@ -610,6 +634,7 @@ export function WatchApp({ token, onLogout, isAdmin }: Props) {
       socket.off("join_error", onJoinErr);
       socket.off("room_peers", onPeers);
       socket.off("room_settings_changed", onSettings);
+      socket.off("public_rooms", onPublicRooms);
       socket.off("you_were_kicked", onKicked);
       socket.off("video_unloaded", onVideoUnloaded);
       socket.off("user_joined", onUserJoined);
@@ -623,6 +648,11 @@ export function WatchApp({ token, onLogout, isAdmin }: Props) {
     pushActivity,
     myId,
   ]);
+
+  useEffect(() => {
+    if (!socket || !socket.connected || phase !== "lobby") return;
+    socket.emit("get_public_rooms");
+  }, [phase, socket]);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -659,31 +689,56 @@ export function WatchApp({ token, onLogout, isAdmin }: Props) {
 
   function createRoom() {
     if (!socket || lobbyBusy) return;
+    if (createJoinMode === "password" && createPassword.trim().length < 4) {
+      setBanner("Set a room password with at least 4 characters.");
+      return;
+    }
     setBanner(null);
     setLobbyBusy(true);
     setLobbyAction("create");
-    socket.emit("create_room");
+    pendingRejoinPasswordRef.current =
+      createJoinMode === "password" ? createPassword.trim() : "";
+    socket.emit("create_room", {
+      joinMode: createJoinMode,
+      password:
+        createJoinMode === "password" ? createPassword.trim() : undefined,
+    });
   }
 
   function joinRoom() {
     if (!socket || lobbyBusy) return;
     const id = joinInput.trim().toUpperCase();
     if (!id) return;
+    const password = joinPassword.trim();
     setBanner(null);
     setLobbyBusy(true);
     setLobbyAction("join");
-    socket.emit("join_room", { roomId: id });
+    pendingRejoinPasswordRef.current = password;
+    socket.emit("join_room", { roomId: id, password: password || undefined });
+  }
+
+  function joinPublicRoom(nextRoomId: string) {
+    setJoinInput(nextRoomId);
+    setJoinPassword("");
+    if (!socket || lobbyBusy) return;
+    setBanner(null);
+    setLobbyBusy(true);
+    setLobbyAction("join");
+    pendingRejoinPasswordRef.current = "";
+    socket.emit("join_room", { roomId: nextRoomId });
   }
 
   function leaveRoom() {
     if (!socket) return;
     pendingRejoinRoomIdRef.current = null;
+    pendingRejoinPasswordRef.current = "";
     teardownPlayerFullscreen();
     socket.emit("leave_room");
     setPhase("lobby");
     resetRoomStateToLobby();
     setLobbyBusy(false);
     setLobbyAction(null);
+    socket.emit("get_public_rooms");
   }
 
   function loadVideo() {
@@ -799,7 +854,15 @@ export function WatchApp({ token, onLogout, isAdmin }: Props) {
         onLogout={onLogout}
         banner={banner}
         joinInput={joinInput}
+        joinPassword={joinPassword}
         onJoinInputChange={setJoinInput}
+        onJoinPasswordChange={setJoinPassword}
+        createJoinMode={createJoinMode}
+        createPassword={createPassword}
+        onCreateJoinModeChange={setCreateJoinMode}
+        onCreatePasswordChange={setCreatePassword}
+        publicRooms={publicRooms}
+        onJoinPublicRoom={joinPublicRoom}
         onCreateRoom={createRoom}
         onJoinRoom={joinRoom}
         lobbyBusy={lobbyBusy}
