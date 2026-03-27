@@ -27,7 +27,11 @@ export async function createHtml5Adapter(
         el.style.height = "100%";
       }
       el.src = opts.source;
-      el.crossOrigin = "anonymous";
+      // CORS mode breaks many blob:/data: URLs and requires ACAO on remote hosts.
+      // Only opt in for cross-origin http(s) direct file URLs.
+      if (/^https?:\/\//i.test(opts.source)) {
+        el.crossOrigin = "anonymous";
+      }
 
       const onPlay = () => {
         if (suppress || emitCooldown.isActive() || !media) return;

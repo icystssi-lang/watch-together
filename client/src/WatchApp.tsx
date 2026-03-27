@@ -325,28 +325,41 @@ export function WatchApp({ token, onLogout, isAdmin }: Props) {
     setActivityLines([]);
   }, []);
 
-  const applyRoomPayload = useCallback((p: RoomPayload) => {
-    setRoomId(p.roomId);
-    setHostSocketId(p.hostSocketId);
-    setOnlyHostControls(p.onlyHostControls);
-    setPlayback({ time: p.currentTime, isPlaying: p.isPlaying });
-    if (p.username) setUsername(p.username);
-    if (p.maxUsers !== undefined) {
-      setMaxUsers(p.maxUsers);
-      setMaxUnlimited(p.maxUsers == null);
-      setMaxInput(p.maxUsers == null ? "" : String(p.maxUsers));
-    }
-    if (p.peers) setPeers(p.peers);
-    if (p.videoProvider && p.videoSource) {
-      setVideo({
-        provider: p.videoProvider as VideoProvider,
-        source: p.videoSource,
-        audioOnly: Boolean(p.audioOnly),
-      });
-    } else {
-      setVideo(null);
-    }
-  }, []);
+  const applyRoomPayload = useCallback(
+    (p: RoomPayload) => {
+      setRoomId(p.roomId);
+      setHostSocketId(p.hostSocketId);
+      setOnlyHostControls(p.onlyHostControls);
+      setPlayback({ time: p.currentTime, isPlaying: p.isPlaying });
+      if (p.username) setUsername(p.username);
+      if (p.maxUsers !== undefined) {
+        setMaxUsers(p.maxUsers);
+        setMaxUnlimited(p.maxUsers == null);
+        setMaxInput(p.maxUsers == null ? "" : String(p.maxUsers));
+      }
+      if (p.peers) setPeers(p.peers);
+      if (p.videoProvider && p.videoSource) {
+        const blobLocalOnly =
+          p.videoProvider === "html5" &&
+          p.videoSource.startsWith("blob:") &&
+          socket?.id != null &&
+          p.hostSocketId != null &&
+          socket.id !== p.hostSocketId;
+        if (blobLocalOnly) {
+          setVideo(null);
+        } else {
+          setVideo({
+            provider: p.videoProvider as VideoProvider,
+            source: p.videoSource,
+            audioOnly: Boolean(p.audioOnly),
+          });
+        }
+      } else {
+        setVideo(null);
+      }
+    },
+    [socket],
+  );
 
   useEffect(() => {
     return () => {
