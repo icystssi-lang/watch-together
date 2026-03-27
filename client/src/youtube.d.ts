@@ -24,11 +24,17 @@ declare namespace YT {
     loadVideoById(videoId: string): void;
   }
 
+  interface OnErrorEvent {
+    data: number;
+    target: Player;
+  }
+
   interface PlayerOptions {
     videoId?: string;
     playerVars?: Record<string, string | number>;
     events?: {
       onReady?: (e: { target: Player }) => void;
+      onError?: (e: OnErrorEvent) => void;
       onStateChange?: (e: OnStateChangeEvent) => void;
     };
   }
